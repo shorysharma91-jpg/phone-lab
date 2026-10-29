@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Phone Tester</title>
+<style>
+:root{--bg:#0f1115;--fg:#f2f4f8;--card:#1b1f27;--ok:#22c55e;--bad:#ef4444;--acc:#3b82f6}
+@media (prefers-color-scheme:light){:root{--bg:#f4f6fa;--fg:#141820;--card:#fff}}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--fg);padding:16px;padding-top:max(16px,env(safe-area-inset-top))}
+h1{font-size:20px;margin:0 0 4px}
+p.s{opacity:.7;margin:0 0 14px;font-size:14px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+button{font:inherit;border:0;border-radius:12px;padding:14px 10px;background:var(--card);color:var(--fg);text-align:left;cursor:pointer}
+button .r{float:right;font-weight:700}
+.pass{outline:2px solid var(--ok)}.fail{outline:2px solid var(--bad)}
+.pass .r{color:var(--ok)}.fail .r{color:var(--bad)}
+.pri{background:var(--acc);color:#fff;width:100%;margin-top:12px;text-align:center}
+#ov{position:fixed;inset:0;background:#000;color:#fff;display:none;flex-direction:column;z-index:9}
+#ov.on{display:flex}
+#stage{flex:1;position:relative;display:flex;align-items:center;justify-content:center;text-align:center;padding:16px;overflow:hidden;touch-action:none}
+#bar{display:flex;gap:8px;padding:10px;padding-bottom:max(10px,env(safe-area-inset-bottom));background:#111}
+#bar button{flex:1;text-align:center;color:#fff;background:#333}
+#bar .g{background:#16a34a}#bar .b{background:#dc2626}
+video{max-width:100%;max-height:100%}
+canvas{position:absolute;inset:0;width:100%;height:100%}
+pre{background:var(--card);padding:12px;border-radius:12px;white-space:pre-wrap;font-size:13px}
+</style>
+</head>
+<body>
+<h1>Phone Tester</h1>
+<p class="s">Tap each test, then mark Pass or Fail. Results appear live on the laptop dashboard.</p>
+<div class="grid" id="grid"></div>
+<button class="pri" id="rep">Show report</button>
+<pre id="out"></pre>
+
+<div id="ov">
+  <div id="stage"></div>
+  <div id="bar">
+    <button class="g" id="p">Pass</button>
+    <button class="b" id="f">Fail</button>
+    <button id="x">Close</button>
+  </div>
+</div>
+
+<script>
+var results={}, cur=null, cleanup=null;
+var CODE=(location.pathname.match(/^\/p\/([A-Za-z0-9]+)/)||[])[1];
+var $=function(i){return document.getElementById(i)};
+var stage=$('stage');
+
+var tests=[
+ {id:'screen',name:'Screen colours',run:screenTest},
+ {id:'touch',name:'Touch / draw',run:touchTest},
+ {id:'multi',name:'Multi-touch',run:multiTest},
+ {id:'front',name:'Front camera',run:function(){cam('user')}},
+ {id:'rear',name:'Rear camera',run:function(){cam('environment')}},
+ {id:'mic',name:'Mic + speaker',run:micTest},
+ {id:'tone',name:'Speaker tone',run:toneTest},
+ {id:'vib',name:'Vibration',run:vibTest},
+ {id:'motion',name:'Accelerometer / gyro',run:motionTest},
+ {id:'gps',name:'GPS',run:gpsTest},
+ {id:'batt',name:'Battery',run:battTest},
+ {id:'keys',name:'Volume keys',run:keyTest},
+ {id:'imei',name:'IMEI check',run:imeiTest},
+ {id:'info',name:'Device info',run:infoTest}
+];
+
+var grid=$('grid');
+tests.forEach(function(t){
+  var b=document.createElement('button');
+  b.id='b_'+t.id;
+  b.innerHTML=t.name+'<span class="r"></span>';
+  b.onclick=function(){open(t)};
+  grid.appendChild(b);
+});
+
+function open(t){
+  cur=t; stage.innerHTML=''; $('ov').classList.add('on');
+  try{t.run()}catch(e){stage.textContent='Error: '+e.message}
+}
+function close(){
+  if(cleanup){try{cleanup()}catch(e){} cleanup=null}
+  stage.innerHTML=''; $('ov').classList.remove('on');
+}
+function mark(v){
+  if(!cur)return;
+  results[cur.id]=v;
+  var b=$('b_'+cur.id);
+  b.className=v?'pass':'fail';
+  b.querySelector('.r').textContent=v?'PASS':'FAIL';
+  close();sync();
+}
+$('p').onclick=function(){mark(true)};
+$('f').onclick=function(){mark(false)};
+$('x').onclick=close;
+
+function msg(h){stage.innerHTML='<div style="max-width:90%;font-size:18px;line-height:1.5">'+h+'</div>'}
+
+function screenTest(){
+  var cols=['#f00','#0f0','#00f','#fff','#000','#808080'], i=0;
+  stage.style.background=cols[0];
+  stage.innerHTML='<div style="background:#0008;padding:8px 12px;border-radius:8px">Tap to change colour. Look for dead pixels, spots, tint.</div>';
+  stage.onclick=function(){i=(i+1)%cols.length;stage.style.background=cols[i]};
+  cleanup=function(){stage.style.background='';stage.onclick=null};
+}
+
+function touchTest(){
+  var c=document.createElement('canvas');stage.appendChild(c);
+  c.width=stage.clientWidth;c.height=stage.clientHeight;
+  var g=c.getContext('2d');g.lineWidth=40;g.lineCap='round';g.strokeStyle='#3b82f6';
+  var last=null;
+  var t=document.createElement('div');
+  t.textContent='Draw over the whole screen. Any gaps are dead touch zones.';
+  t.style.cssText='position:absolute;top:10px;left:10px;right:10px;font-size:14px;pointer-events:none;z-index:2';
+  stage.appendChild(t);
+  c.addEventListener('pointerdown',function(e){last=e;});
+  c.addEventListener('pointermove',function(e){
+    if(!last)return;
+    g.beginPath();g.moveTo(last.clientX,last.clientY);g.lineTo(e.clientX,e.clientY);g.stroke();last=e;
+  });
+  c.addEventListener('pointerup',function(){last=null});
+}
+
+function multiTest(){
+  var c=document.createElement('canvas');stage.appendChild(c);
+  c.width=stage.clientWidth;c.height=stage.clientHeight;
+  var g=c.getContext('2d');
+  function draw(e){
+    g.clearRect(0,0,c.width,c.height);
+    g.fillStyle='#fff';g.font='20px sans-serif';
+    g.fillText('Touch points: '+e.touches.length,20,40);
+    for(var i=0;i<e.touches.length;i++){
+      var t=e.touches[i];g.beginPath();g.arc(t.clientX,t.clientY,40,0,7);
+      g.fillStyle='hsl('+(i*60)+',80%,55%)';g.fill();
+    }
+  }
+  ['touchstart','touchmove','touchend'].forEach(function(n){c.addEventListener(n,function(e){e.preventDefault();draw(e)},{passive:false})});
+  draw({touches:[]});
+}
+
+function cam(facing){
+  if(!navigator.mediaDevices){msg('Camera needs HTTPS.');return}
+  var v=document.createElement('video');v.autoplay=true;v.playsInline=true;v.muted=true;
+  stage.appendChild(v);
+  var s;
+  navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:facing}}}).then(function(st){
+    s=st;v.srcObject=st;
+    var tr=st.getVideoTracks()[0],cap=tr.getCapabilities?tr.getCapabilities():{};
+    var d=document.createElement('div');
+    d.style.cssText='position:absolute;bottom:6px;left:6px;font-size:12px;background:#0009;padding:4px 8px;border-radius:6px';
+    var st2=tr.getSettings();
+    d.textContent=st2.width+'x'+st2.height+(cap.torch?' | flash: yes':'')+(cap.focusMode?' | autofocus: yes':'');
+    stage.appendChild(d);
+  }).catch(function(e){msg('Camera error: '+e.name)});
+  cleanup=function(){if(s)s.getTracks().forEach(function(t){t.stop()})};
+}
+
+function micTest(){
+  if(!navigator.mediaDevices){msg('Mic needs HTTPS.');return}
+  msg('Tap Start, speak for 4 seconds, then it plays back.<br><br><button id="go" style="background:#3b82f6;color:#fff">Start</button><div id="lv" style="height:12px;background:#22c55e;width:0;margin-top:14px"></div>');
+  var raf,ctx,s;
+  $('go').onclick=function(){
+    navigator.mediaDevices.getUserMedia({audio:true}).then(function(st){
+      s=st;
+      ctx=new (window.AudioContext||window.webkitAudioContext)();
+      var src=ctx.createMediaStreamSource(st),an=ctx.createAnalyser();src.connect(an);
+      var buf=new Uint8Array(an.fftSize);
+      (function loop(){an.getByteTimeDomainData(buf);var m=0;for(var i=0;i<buf.length;i++)m=Math.max(m,Math.abs(buf[i]-128));
+        $('lv').style.width=Math.min(100,m*1.6)+'%';raf=requestAnimationFrame(loop)})();
+      var rec=new MediaRecorder(st),ch=[];
+      rec.ondataavailable=function(e){ch.push(e.data)};
+      rec.onstop=function(){cancelAnimationFrame(raf);
+        var a=new Audio(URL.createObjectURL(new Blob(ch)));a.play()};
+      rec.start();setTimeout(function(){rec.stop()},4000);
+    }).catch(function(e){msg('Mic error: '+e.name)});
+  };
+  cleanup=function(){cancelAnimationFrame(raf);if(s)s.getTracks().forEach(function(t){t.stop()});if(ctx)ctx.close()};
+}
+
+function toneTest(){
+  msg('Playing a tone. Use Fail if no sound.<br><br><button id="l" style="background:#333;color:#fff">Left</button> <button id="r" style="background:#333;color:#fff">Right</button> <button id="c" style="background:#333;color:#fff">Both</button>');
+  var ctx=new (window.AudioContext||window.webkitAudioContext)();
+  function play(pan){
+    var o=ctx.createOscillator(),p=ctx.createStereoPanner?ctx.createStereoPanner():null,g=ctx.createGain();
+    g.gain.value=.4;o.frequency.value=440;o.connect(g);
+    if(p){p.pan.value=pan;g.connect(p);p.connect(ctx.destination)}else g.connect(ctx.destination);
+    o.start();o.stop(ctx.currentTime+1);
+  }
+  $('l').onclick=function(){play(-1)};$('r').onclick=function(){play(1)};$('c').onclick=function(){play(0)};
+  cleanup=function(){ctx.close()};
+}
+
+function vibTest(){
+  if(!navigator.vibrate){msg('This browser does not support vibration (iPhone / Safari never do). Use Chrome on Android.');return}
+  msg('Tap the button. The phone should buzz.<br><br><button id="v" style="background:#3b82f6;color:#fff">Vibrate</button><br><br><div id="vr" style="font-size:14px"></div>'+
+    '<small>If it does not buzz: turn on vibration / touch feedback in phone Settings, turn off silent and battery saver mode, and use Chrome.</small>');
+  $('v').onclick=function(){
+    var ok=navigator.vibrate([400,200,400]);
+    $('vr').textContent='Browser accepted the request: '+(ok?'yes':'no');
+  };
+}
+
+function motionTest(){
+  msg('<div id="m">Move or tilt the phone.</div>');
+  function start(){
+    function h(e){
+      var a=e.accelerationIncludingGravity||{},r=e.rotationRate||{};
+      $('m').innerHTML='Accel x/y/z:<br>'+[a.x,a.y,a.z].map(function(v){return (v||0).toFixed(2)}).join(' / ')+
+        '<br><br>Gyro a/b/g:<br>'+[r.alpha,r.beta,r.gamma].map(function(v){return (v||0).toFixed(1)}).join(' / ');
+    }
+    addEventListener('devicemotion',h);
+    var old=cleanup;cleanup=function(){removeEventListener('devicemotion',h)};
+  }
+  if(window.DeviceMotionEvent&&typeof DeviceMotionEvent.requestPermission==='function'){
+    DeviceMotionEvent.requestPermission().then(function(r){if(r==='granted')start()});
+  }else if(window.DeviceMotionEvent)start();
+  else msg('Motion sensors not available.');
+}
+
+function gpsTest(){
+  msg('Getting location...');
+  navigator.geolocation.getCurrentPosition(function(p){
+    msg('Lat: '+p.coords.latitude.toFixed(5)+'<br>Lng: '+p.coords.longitude.toFixed(5)+'<br>Accuracy: '+Math.round(p.coords.accuracy)+' m');
+  },function(e){msg('GPS error: '+e.message)},{enableHighAccuracy:true,timeout:15000});
+}
+
+function battTest(){
+  if(!navigator.getBattery){msg('Battery API not available in this browser.');return}
+  navigator.getBattery().then(function(b){
+    function show(){msg('Level: '+Math.round(b.level*100)+'%<br>Charging: '+(b.charging?'yes':'no')+'<br><br>Plug and unplug the charger to test the port.')}
+    show();b.onchargingchange=show;b.onlevelchange=show;
+    cleanup=function(){b.onchargingchange=null;b.onlevelchange=null};
+  });
+}
+
+function keyTest(){
+  msg('Press volume up and down.<br><br><div id="k">Waiting...</div><br><small>Works on some browsers only. If nothing shows, use the native app.</small>');
+  function h(e){$('k').textContent='Key: '+e.key+' / '+e.code;e.preventDefault()}
+  addEventListener('keydown',h);cleanup=function(){removeEventListener('keydown',h)};
+}
+
+
+var imeis={a:'',b:''};
+function luhn(n){
+  var sum=0;
+  for(var i=0;i<15;i++){
+    var d=+n[14-i];
+    if(i%2===1){d*=2;if(d>9)d-=9}
+    sum+=d;
+  }
+  return sum%10===0;
+}
+function imeiState(v){
+  if(!v)return 'not entered';
+  if(!/^\d{15}$/.test(v))return 'INVALID (must be 15 digits)';
+  return luhn(v)?'valid format':'INVALID (checksum fails, likely fake or typo)';
+}
+function imeiTest(){
+  var inp='width:100%;padding:12px;font-size:18px;border-radius:10px;border:1px solid #555;background:#222;color:#fff;margin:6px 0';
+  var lk='display:inline-block;background:#333;color:#fff;padding:10px 12px;border-radius:10px;text-decoration:none;margin:4px 2px;font-size:14px';
+  msg('<div style="text-align:left;font-size:15px">'+
+    'On the phone dial <b>*#06#</b> and type the IMEI numbers below.<br>'+
+    '<a style="'+lk+'" href="tel:*%2306%23">Dial *#06#</a><br><br>'+
+    'IMEI 1<input id="i1" inputmode="numeric" maxlength="15" style="'+inp+'" placeholder="15 digits">'+
+    '<div id="s1" style="font-size:14px"></div>'+
+    'IMEI 2 (dual SIM)<input id="i2" inputmode="numeric" maxlength="15" style="'+inp+'" placeholder="15 digits">'+
+    '<div id="s2" style="font-size:14px"></div><br>'+
+    '<div id="chk"></div>'+
+    '<small>This checks the format and checksum only. To check blacklist / stolen status, use the links above after entering IMEI 1.</small></div>');
+  function upd(){
+    var a=$('i1').value.replace(/\D/g,''),b=$('i2').value.replace(/\D/g,'');
+    imeis.a=a;imeis.b=b;sync();
+    var sa=imeiState(a),sb=imeiState(b);
+    $('s1').textContent=sa;$('s1').style.color=sa.indexOf('valid')===0?'#22c55e':(a?'#ef4444':'#aaa');
+    $('s2').textContent=sb;$('s2').style.color=sb.indexOf('valid')===0?'#22c55e':(b?'#ef4444':'#aaa');
+    $('chk').innerHTML=(a.length===15&&luhn(a))?
+      'TAC (model code): <b>'+a.slice(0,8)+'</b><br>'+
+      '<a style="'+lk+'" href="sms:14422?body=KYM%20'+a+'">Send KYM SMS (14422)</a>'+
+      '<a style="'+lk+'" target="_blank" rel="noopener" href="https://www.sancharsaathi.gov.in/">Sanchar Saathi</a><br><br>':'';
+  }
+  $('i1').value=imeis.a;$('i2').value=imeis.b;
+  $('i1').oninput=upd;$('i2').oninput=upd;upd();
+}
+
+function infoTest(){
+  var n=navigator,c=n.connection||{};
+  msg('Screen: '+screen.width+'x'+screen.height+' @'+devicePixelRatio+'x<br>'+
+    'CPU cores: '+(n.hardwareConcurrency||'?')+'<br>RAM (approx): '+(n.deviceMemory||'?')+' GB<br>'+
+    'Touch points: '+(n.maxTouchPoints||0)+'<br>Network: '+(c.effectiveType||'?')+'<br>'+
+    'Platform: '+(n.platform||'?')+'<br><small>'+n.userAgent+'</small>');
+}
+
+function sync(){
+  if(!CODE)return;
+  function send(batt){
+    var n=navigator;
+    var body={
+      device:{screen:screen.width+'x'+screen.height+' @'+devicePixelRatio+'x',cores:n.hardwareConcurrency||'',mem:n.deviceMemory||'',platform:n.platform||'',ua:n.userAgent,battery:batt},
+      tests:tests.map(function(t){return {id:t.id,name:t.name,result:results[t.id]===undefined?null:results[t.id]}}),
+      imei:{a:imeis.a,b:imeis.b,sa:imeiState(imeis.a),sb:imeiState(imeis.b)}
+    };
+    fetch('/api/'+CODE,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).catch(function(){});
+  }
+  if(n_b())navigator.getBattery().then(function(b){send(Math.round(b.level*100)+'%'+(b.charging?' (charging)':''))}).catch(function(){send('')});
+  else send('');
+}
+function n_b(){return !!navigator.getBattery}
+sync();
+$('rep').onclick=function(){
+  var lines=['PHONE TEST REPORT',new Date().toLocaleString(),'',
+    'Screen: '+screen.width+'x'+screen.height,'UA: '+navigator.userAgent,'',
+    'IMEI 1: '+(imeis.a||'-')+' ('+imeiState(imeis.a)+')','IMEI 2: '+(imeis.b||'-')+' ('+imeiState(imeis.b)+')',''];
+  tests.forEach(function(t){
+    var r=results[t.id];
+    lines.push(t.name+': '+(r===undefined?'not tested':r?'PASS':'FAIL'));
+  });
+  $('out').textContent=lines.join('\n');
+};
+</script>
+</body>
+</html>
